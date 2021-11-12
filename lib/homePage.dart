@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:developer' as dev;
+import 'dart:math';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -257,8 +259,12 @@ class HomePageView extends State<HomePage> with SingleTickerProviderStateMixin {
     double _m;
     double _threshold;
     double _bpm;
+    double _hrv; // Heartrate variability
+    double _si; // Stress index
     int _counter;
     int _previous;
+    int _rrInterval;
+    List<int> _rrIntervalHist = List.filled(0, 0, growable: true);
     while (_toggled) {
       _values = List.from(_data); // create a copy of the current data array
       _avg = 0;
@@ -272,21 +278,80 @@ class HomePageView extends State<HomePage> with SingleTickerProviderStateMixin {
       _bpm = 0;
       _counter = 0;
       _previous = 0;
+      _rrInterval = 0;
+      _hrv = 0;
+      _si = 0;
       for (int i = 1; i < _n; i++) {
         if (_values[i - 1].value < _threshold &&
             _values[i].value > _threshold) {
           if (_previous != 0) {
             _counter++;
-            _bpm += 60 *
-                1000 /
-                (_values[i].time.millisecondsSinceEpoch - _previous);
+            _rrInterval = (_values[i].time.millisecondsSinceEpoch - _previous);
+            if (_rrInterval > 0) {
+              _bpm += 60 * 1000 / _rrInterval;
+            }
           }
           _previous = _values[i].time.millisecondsSinceEpoch;
+
+          // TODO: avoid hardcode
+          if (_rrIntervalHist.length >= 20) {
+            _rrIntervalHist.removeAt(0);
+          }
+          if (_rrInterval > 0) {
+            _rrIntervalHist.add(_rrInterval);
+          }
         }
       }
+
+      // Calculate HRV, max R-R interval, min R-R interval
+      if (_rrIntervalHist.length >= 2) {
+        double sumSquaredIntervalDiff = 0;
+        int maxIntervalValue = _rrIntervalHist[0];
+        int minIntervalValue = _rrIntervalHist[0];
+        int mostFreqCounter = 0;
+        int mode = 0;
+        var map = Map();
+        map[_rrIntervalHist[0]] = 1;
+        for (int i = 1; i < _rrIntervalHist.length; i++) {
+          // Calculate HRV
+          sumSquaredIntervalDiff +=
+              pow(_rrIntervalHist[i] - _rrIntervalHist[i - 1], 2);
+
+          // Find max R-R interval value
+          if (_rrIntervalHist[i] > maxIntervalValue) {
+            maxIntervalValue = _rrIntervalHist[i];
+          }
+
+          // Find min R-R interval value
+          if (_rrIntervalHist[i] < minIntervalValue) {
+            minIntervalValue = _rrIntervalHist[i];
+          }
+
+          // Calculate mode (the most frequent value) and it's occurences
+          int rrKey = _rrIntervalHist[i];
+          if (!map.containsKey(rrKey)) {
+            map[rrKey] = 1;
+          } else {
+            map[rrKey] += 1;
+          }
+          if (map[rrKey] > mostFreqCounter) {
+            mode = rrKey;
+            mostFreqCounter = map[rrKey];
+          }
+        }
+
+        // It's time to calculate stress index
+        // si = AMo / (2 * VR * Mo)
+        _hrv = sqrt(sumSquaredIntervalDiff / (_rrIntervalHist.length - 1));
+        double amo = mostFreqCounter / _rrIntervalHist.length;
+        int vr = maxIntervalValue - minIntervalValue;
+        _si = amo / (2 * vr * mode + 1e-8);
+        dev.log(
+            'HRV: $_hrv Length: ${_rrIntervalHist.length} max RR: $maxIntervalValue min RR: $minIntervalValue si: $_si');
+      }
+
       if (_counter > 0) {
         _bpm = _bpm / _counter;
-        print(_bpm);
         setState(() {
           this._bpm = ((1 - _alpha) * this._bpm + _alpha * _bpm).toInt();
         });
